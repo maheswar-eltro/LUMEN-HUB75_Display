@@ -1,6 +1,7 @@
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <ESP32-VirtualMatrixPanel-I2S-DMA.h>
+#include <math.h>
 
 // =====================================================
 // YOUR WORKING HUB75 PIN CONFIGURATION
@@ -64,7 +65,7 @@ inline VirtualCoords EightScanPanel::getCoords(
 }
 
 // =====================================================
-// DISPLAY
+// DISPLAY OBJECTS
 // =====================================================
 
 MatrixPanel_I2S_DMA *dma_display = nullptr;
@@ -79,19 +80,21 @@ uint16_t WHITE;
 uint16_t DIM_BLUE;
 uint16_t BLUE;
 uint16_t CYAN;
+uint16_t PINK;
 uint16_t PURPLE;
 uint16_t YELLOW;
 uint16_t ORANGE;
-uint16_t PINK;
+uint16_t RED;
+uint16_t GREEN;
 
 // =====================================================
-// TIMING
+// FRAME TIMING
 // =====================================================
+
+const unsigned long FRAME_DELAY = 35;
 
 unsigned long lastFrame = 0;
 unsigned long sceneStart = 0;
-
-const unsigned long FRAME_DELAY = 35;
 
 // =====================================================
 // SCENES
@@ -101,27 +104,25 @@ enum Scene {
     BULB_RISE,
     BULB_FLICKER,
     CAMERA_LAUNCH,
-    GALAXY_SCROLL,
-    END_HOLD
+    SHIP_FLYBY,
+    LUMEN_REVEAL,
+    PACMAN_EATS,
+    BLACK_HOLD
 };
 
 Scene scene = BULB_RISE;
 
 // =====================================================
-// BULB ANIMATION
+// BULB
 // =====================================================
 
-int bulbY = 36;
-
 const int BULB_X = 32;
+int bulbY = 36;
 
 bool bulbLit = false;
 
-int flickerCount = 0;
-unsigned long lastFlicker = 0;
-
 // =====================================================
-// CAMERA / STARFIELD
+// STARFIELD
 // =====================================================
 
 const int STAR_COUNT = 42;
@@ -129,43 +130,72 @@ const int STAR_COUNT = 42;
 struct Star {
     float x;
     float y;
-    float vx;
-    float vy;
+    float speed;
     uint8_t brightness;
 };
 
 Star stars[STAR_COUNT];
 
+// =====================================================
+// CAMERA LAUNCH
+// =====================================================
+
 float launchSpeed = 0;
 
 // =====================================================
-// GALAXY TEXT SCROLL
+// RETRO SPACESHIP
+// =====================================================
+
+float shipX = -14;
+int shipY = 15;
+
+unsigned long lastShipMove = 0;
+
+const unsigned long SHIP_MOVE_DELAY = 55;
+
+// =====================================================
+// LUMEN TEXT
 // =====================================================
 
 int textX = PANEL_WIDTH;
 
-const int TEXT_Y = 11;
+const int TEXT_Y = 10;
+const int TEXT_WIDTH = 60;
 
 unsigned long lastTextMove = 0;
 
-const unsigned long TEXT_SCROLL_DELAY = 160;
+const unsigned long TEXT_SCROLL_DELAY = 140;
+
+// =====================================================
+// PAC-MAN
+// =====================================================
+
+float pacX = 72;
+
+int pacY = 16;
+
+bool pacMouthOpen = true;
+
+unsigned long lastPacMove = 0;
+unsigned long lastMouthToggle = 0;
+
+const unsigned long PAC_MOVE_DELAY = 65;
+const unsigned long PAC_MOUTH_DELAY = 130;
 
 // =====================================================
 // STAR FUNCTIONS
 // =====================================================
 
-void createStar(int i, bool anywhere = true) {
+void createStar(int i, bool randomY = true) {
     stars[i].x = random(0, PANEL_WIDTH);
 
-    if (anywhere) {
+    if (randomY) {
         stars[i].y = random(0, PANEL_HEIGHT);
     } else {
-        stars[i].y = random(-10, 0);
+        stars[i].y = random(-8, 0);
     }
 
-    stars[i].vx = 0;
-    stars[i].vy = 0;
-
+    stars[i].speed = random(10, 40) / 100.0;
     stars[i].brightness = random(1, 4);
 }
 
@@ -175,9 +205,9 @@ void initStars() {
     }
 }
 
-uint16_t starColor(uint8_t b) {
-    if (b == 1) return DIM_BLUE;
-    if (b == 2) return CYAN;
+uint16_t getStarColor(uint8_t brightness) {
+    if (brightness == 1) return DIM_BLUE;
+    if (brightness == 2) return BLUE;
     return WHITE;
 }
 
@@ -186,8 +216,20 @@ void drawStars() {
         display->drawPixel(
             (int)stars[i].x,
             (int)stars[i].y,
-            starColor(stars[i].brightness)
+            getStarColor(stars[i].brightness)
         );
+    }
+}
+
+void updateSideStars() {
+    for (int i = 0; i < STAR_COUNT; i++) {
+        stars[i].x -= stars[i].speed;
+
+        if (stars[i].x < 0) {
+            stars[i].x = PANEL_WIDTH - 1;
+            stars[i].y = random(0, PANEL_HEIGHT);
+            stars[i].brightness = random(1, 4);
+        }
     }
 }
 
@@ -195,30 +237,71 @@ void drawStars() {
 // BULB DRAWING
 // =====================================================
 
-// Draws a simple pixel-art light bulb.
-// Centered at x, with the top at y.
+// Pixel-art yellow light bulb.
+// x = horizontal center; y = top of bulb.
 
 void drawBulb(int x, int y, bool glow) {
     uint16_t bulbColor = glow ? YELLOW : ORANGE;
 
-    // Outer bulb shape
-    display->drawLine(x - 3, y, x + 3, y, bulbColor);
-    display->drawLine(x - 4, y + 1, x + 4, y + 1, bulbColor);
-    display->drawLine(x - 4, y + 2, x + 4, y + 2, bulbColor);
-    display->drawPixel(x - 3, y + 3, bulbColor);
-    display->drawPixel(x + 3, y + 3, bulbColor);
+    // Glass
+    display->drawLine(
+        x - 3, y,
+        x + 3, y,
+        bulbColor
+    );
+
+    display->drawLine(
+        x - 4, y + 1,
+        x + 4, y + 1,
+        bulbColor
+    );
+
+    display->drawLine(
+        x - 4, y + 2,
+        x + 4, y + 2,
+        bulbColor
+    );
+
+    display->drawLine(
+        x - 3, y + 3,
+        x + 3, y + 3,
+        bulbColor
+    );
 
     // Neck
-    display->drawLine(x - 2, y + 4, x + 2, y + 4, ORANGE);
-    display->drawLine(x - 2, y + 5, x + 2, y + 5, ORANGE);
+    display->drawLine(
+        x - 2, y + 4,
+        x + 2, y + 4,
+        ORANGE
+    );
 
-    // Base
-    display->drawLine(x - 2, y + 6, x + 2, y + 6, WHITE);
-    display->drawLine(x - 2, y + 7, x + 2, y + 7, WHITE);
-    display->drawLine(x - 1, y + 8, x + 1, y + 8, WHITE);
+    display->drawLine(
+        x - 2, y + 5,
+        x + 2, y + 5,
+        ORANGE
+    );
+
+    // Metal base
+    display->drawLine(
+        x - 2, y + 6,
+        x + 2, y + 6,
+        WHITE
+    );
+
+    display->drawLine(
+        x - 2, y + 7,
+        x + 2, y + 7,
+        WHITE
+    );
+
+    display->drawLine(
+        x - 1, y + 8,
+        x + 1, y + 8,
+        WHITE
+    );
 
     if (glow) {
-        // Rays
+        // Light rays
         display->drawPixel(x, y - 2, YELLOW);
         display->drawPixel(x - 6, y + 1, YELLOW);
         display->drawPixel(x + 6, y + 1, YELLOW);
@@ -228,13 +311,146 @@ void drawBulb(int x, int y, bool glow) {
 }
 
 // =====================================================
-// SCENE 1: BULB RISES FROM BOTTOM
+// RETRO SPACESHIP DRAWING
+// =====================================================
+
+// Small 16-bit arcade-style spaceship pointing right.
+
+void drawSpaceship(int x, int y) {
+    // Engine flame
+    display->drawLine(
+        x - 5, y - 1,
+        x - 8, y,
+        ORANGE
+    );
+
+    display->drawLine(
+        x - 5, y,
+        x - 8, y + 1,
+        YELLOW
+    );
+
+    // Main hull
+    display->fillTriangle(
+        x + 7, y,
+        x - 4, y - 4,
+        x - 4, y + 4,
+        CYAN
+    );
+
+    // Cockpit
+    display->drawPixel(
+        x + 1, y,
+        WHITE
+    );
+
+    // Upper wing
+    display->drawLine(
+        x - 3, y - 3,
+        x - 6, y - 6,
+        PURPLE
+    );
+
+    display->drawLine(
+        x - 6, y - 6,
+        x + 1, y - 3,
+        PURPLE
+    );
+
+    // Lower wing
+    display->drawLine(
+        x - 3, y + 3,
+        x - 6, y + 6,
+        PURPLE
+    );
+
+    display->drawLine(
+        x - 6, y + 6,
+        x + 1, y + 3,
+        PURPLE
+    );
+}
+
+// =====================================================
+// PAC-MAN DRAWING
+// =====================================================
+
+// Draw Pac-Man facing LEFT.
+// The black triangular mouth opens toward the left.
+
+void drawPacman(int x, int y, bool mouthOpen) {
+    const int R = 9;
+
+    // Body
+    display->fillCircle(
+        x, y,
+        R,
+        YELLOW
+    );
+
+    if (mouthOpen) {
+        // Cut a black wedge out of the left side.
+        display->fillTriangle(
+            x, y,
+            x - R - 1, y - 4,
+            x - R - 1, y + 4,
+            BLACK
+        );
+    }
+
+    // Tiny eye
+    display->drawPixel(
+        x, y - 3,
+        BLACK
+    );
+}
+
+// =====================================================
+// CAMERA LAUNCH STAR STREAKS
+// =====================================================
+
+void updateLaunchStars() {
+    launchSpeed += 0.55;
+
+    if (launchSpeed > 12) {
+        launchSpeed = 12;
+    }
+
+    for (int i = 0; i < STAR_COUNT; i++) {
+        // Fast diagonal camera movement:
+        // stars sweep down and diagonally.
+
+        stars[i].x -= launchSpeed * 0.65;
+        stars[i].y += launchSpeed;
+
+        if (stars[i].x < 0 ||
+            stars[i].y >= PANEL_HEIGHT) {
+            createStar(i, false);
+            stars[i].x = random(0, PANEL_WIDTH);
+        }
+    }
+}
+
+void drawLaunchStreaks() {
+    for (int i = 0; i < STAR_COUNT; i++) {
+        int x = (int)stars[i].x;
+        int y = (int)stars[i].y;
+
+        display->drawLine(
+            x, y,
+            x + 2, y - 3,
+            getStarColor(stars[i].brightness)
+        );
+    }
+}
+
+// =====================================================
+// SCENE 1: BULB RISES
 // =====================================================
 
 void animateBulbRise() {
     unsigned long elapsed = millis() - sceneStart;
 
-    // Smooth-ish upward movement.
     bulbY = 36 - (elapsed / 70);
 
     if (bulbY < 10) {
@@ -246,9 +462,6 @@ void animateBulbRise() {
     if (elapsed > 1800) {
         scene = BULB_FLICKER;
         sceneStart = millis();
-
-        flickerCount = 0;
-        lastFlicker = 0;
     }
 }
 
@@ -259,23 +472,19 @@ void animateBulbRise() {
 void animateBulbFlicker() {
     unsigned long elapsed = millis() - sceneStart;
 
-    if (millis() - lastFlicker > 180) {
-        lastFlicker = millis();
-
-        bulbLit = !bulbLit;
-        flickerCount++;
+    if (elapsed < 1100) {
+        bulbLit = ((elapsed / 120) % 2 == 0);
+    } else {
+        bulbLit = true;
     }
 
     drawBulb(BULB_X, 10, bulbLit);
 
-    if (elapsed > 1500) {
-        bulbLit = true;
-
+    if (elapsed > 1600) {
         scene = CAMERA_LAUNCH;
         sceneStart = millis();
 
         launchSpeed = 0;
-
         initStars();
     }
 }
@@ -287,122 +496,170 @@ void animateBulbFlicker() {
 void animateCameraLaunch() {
     unsigned long elapsed = millis() - sceneStart;
 
-    // Bulb flashes brightly at launch.
+    updateLaunchStars();
+    drawLaunchStreaks();
+
+    // Brief bulb flash as the camera launches.
     if (elapsed < 250) {
         drawBulb(BULB_X, 10, true);
     }
 
-    // Accelerate star movement.
-    launchSpeed += 0.55;
-
-    if (launchSpeed > 12) {
-        launchSpeed = 12;
-    }
-
-    for (int i = 0; i < STAR_COUNT; i++) {
-        // Camera moves upward-right through space,
-        // making stars streak downward-left.
-        stars[i].x -= launchSpeed * 0.65;
-        stars[i].y += launchSpeed;
-
-        if (stars[i].x < 0 ||
-            stars[i].y >= PANEL_HEIGHT) {
-            createStar(i, false);
-            stars[i].x = random(0, PANEL_WIDTH);
-        }
-    }
-
-    // Streaks create the fast-pan effect.
-    for (int i = 0; i < STAR_COUNT; i++) {
-        int x = (int)stars[i].x;
-        int y = (int)stars[i].y;
-
-        display->drawLine(
-            x, y,
-            x + 2, y - 3,
-            starColor(stars[i].brightness)
-        );
-    }
-
     if (elapsed > 1800) {
-        scene = GALAXY_SCROLL;
+        scene = SHIP_FLYBY;
         sceneStart = millis();
 
-        textX = PANEL_WIDTH;
+        shipX = -14;
+        shipY = 15;
 
-        // Reset stars for calmer side-scrolling.
         initStars();
     }
 }
 
 // =====================================================
-// SCENE 4: GALAXY SIDE-SCROLL + LUMEN
+// SCENE 4: RETRO SPACESHIP FLIES PAST
 // =====================================================
 
-void animateGalaxyScroll() {
-    // Slow side-scrolling stars.
-    for (int i = 0; i < STAR_COUNT; i++) {
-        stars[i].x -= 0.45;
-
-        if (stars[i].x < 0) {
-            stars[i].x = PANEL_WIDTH - 1;
-            stars[i].y = random(0, PANEL_HEIGHT);
-            stars[i].brightness = random(1, 4);
-        }
-    }
-
+void animateShipFlyby() {
+    updateSideStars();
     drawStars();
 
-    // Small purple/cyan galaxy swirl.
-    display->drawPixel(8, 5, PURPLE);
-    display->drawPixel(9, 6, PURPLE);
-    display->drawPixel(10, 7, CYAN);
-    display->drawPixel(11, 8, PURPLE);
-    display->drawPixel(12, 7, CYAN);
-    display->drawPixel(13, 6, PURPLE);
+    unsigned long elapsed = millis() - sceneStart;
 
-    // LUMEN scrolls across the galaxy.
+    if (millis() - lastShipMove >= SHIP_MOVE_DELAY) {
+        lastShipMove = millis();
+
+        shipX += 2;
+
+        // Small vertical wobble
+        shipY = 15 + (int)(3 * sin(elapsed / 180.0));
+    }
+
+    drawSpaceship((int)shipX, shipY);
+
+    if (shipX > PANEL_WIDTH + 12) {
+        scene = LUMEN_REVEAL;
+        sceneStart = millis();
+
+        textX = PANEL_WIDTH;
+        lastTextMove = millis();
+    }
+}
+
+// =====================================================
+// SCENE 5: LUMEN SCROLLS THROUGH SPACE
+// =====================================================
+
+void animateLumenReveal() {
+    updateSideStars();
+    drawStars();
+
     display->setTextSize(2);
     display->setTextColor(PINK);
+
     display->setCursor(textX, TEXT_Y);
     display->print("LUMEN");
 
-    if (millis() - lastTextMove > TEXT_SCROLL_DELAY) {
+    if (millis() - lastTextMove >= TEXT_SCROLL_DELAY) {
         lastTextMove = millis();
+
         textX--;
     }
 
-    // Text width is approximately 60 pixels at size 2.
-    if (textX < -60) {
-        scene = END_HOLD;
+    // Once LUMEN is centered, pause for a moment,
+    // then bring Pac-Man in from the right.
+    if (textX <= 4) {
+        scene = PACMAN_EATS;
+        sceneStart = millis();
+
+        pacX = 72;
+        pacY = 16;
+
+        lastPacMove = millis();
+        lastMouthToggle = millis();
+    }
+}
+
+// =====================================================
+// SCENE 6: PAC-MAN EATS LUMEN
+// =====================================================
+
+void animatePacmanEats() {
+    // Draw the stars and word first.
+    updateSideStars();
+    drawStars();
+
+    display->setTextSize(2);
+    display->setTextColor(PINK);
+
+    display->setCursor(4, TEXT_Y);
+    display->print("LUMEN");
+
+    // Move Pac-Man from right to left.
+    if (millis() - lastPacMove >= PAC_MOVE_DELAY) {
+        lastPacMove = millis();
+
+        pacX -= 1.5;
+    }
+
+    // Alternate open/closed mouth.
+    if (millis() - lastMouthToggle >= PAC_MOUTH_DELAY) {
+        lastMouthToggle = millis();
+
+        pacMouthOpen = !pacMouthOpen;
+    }
+
+    // Erase the part Pac-Man has already eaten.
+    // Since Pac-Man travels left, everything to
+    // his right becomes empty black space.
+    int eraseFromX = (int)pacX + 5;
+
+    if (eraseFromX < PANEL_WIDTH) {
+        if (eraseFromX < 0) {
+            eraseFromX = 0;
+        }
+
+        display->fillRect(
+            eraseFromX,
+            0,
+            PANEL_WIDTH - eraseFromX,
+            PANEL_HEIGHT,
+            BLACK
+        );
+    }
+
+    // Draw Pac-Man over the text.
+    drawPacman(
+        (int)pacX,
+        pacY,
+        pacMouthOpen
+    );
+
+    // Once Pac-Man exits, clear the entire screen.
+    if (pacX < -8) {
+        scene = BLACK_HOLD;
         sceneStart = millis();
     }
 }
 
 // =====================================================
-// SCENE 5: FINAL LOGO HOLD
+// SCENE 7: EMPTY BLACK SCREEN
 // =====================================================
 
-void animateEndHold() {
-    drawStars();
+void animateBlackHold() {
+    // Intentionally draw nothing.
+    // Main loop clears the screen every frame.
 
-    display->setTextSize(2);
-    display->setTextColor(YELLOW);
-    display->setCursor(4, 10);
-    display->print("LUMEN");
-
-    // Decorative sparkles.
-    display->drawPixel(2, 5, CYAN);
-    display->drawPixel(58, 6, WHITE);
-    display->drawPixel(55, 25, PURPLE);
-    display->drawPixel(8, 26, CYAN);
-
-    if (millis() - sceneStart > 3000) {
+    if (millis() - sceneStart > 1800) {
         scene = BULB_RISE;
         sceneStart = millis();
 
         bulbY = 36;
         bulbLit = false;
+
+        launchSpeed = 0;
+
+        shipX = -14;
+        pacX = 72;
 
         initStars();
     }
@@ -447,21 +704,26 @@ void setup() {
 
     display->setTextWrap(false);
 
+    // Colors
     BLACK = display->color565(0, 0, 0);
     WHITE = display->color565(255, 255, 255);
-    DIM_BLUE = display->color565(15, 20, 70);
-    BLUE = display->color565(0, 50, 180);
-    CYAN = display->color565(0, 220, 255);
+
+    DIM_BLUE = display->color565(10, 15, 50);
+    BLUE = display->color565(0, 45, 180);
+    CYAN = display->color565(0, 210, 255);
+    PINK = display->color565(255, 0, 255);
     PURPLE = display->color565(120, 0, 255);
+
     YELLOW = display->color565(255, 220, 0);
     ORANGE = display->color565(255, 100, 0);
-    PINK = display->color565(255, 0, 150);
+    RED = display->color565(255, 0, 0);
+    GREEN = display->color565(0, 255, 80);
 
     initStars();
 
     sceneStart = millis();
 
-    Serial.println("LUMEN Space Journey Started");
+    Serial.println("LUMEN Retro Space Animation Started");
 }
 
 // =====================================================
@@ -475,6 +737,7 @@ void loop() {
 
     lastFrame = millis();
 
+    // Every frame starts from a clean black screen.
     display->fillScreen(BLACK);
 
     switch (scene) {
@@ -490,12 +753,20 @@ void loop() {
             animateCameraLaunch();
             break;
 
-        case GALAXY_SCROLL:
-            animateGalaxyScroll();
+        case SHIP_FLYBY:
+            animateShipFlyby();
             break;
 
-        case END_HOLD:
-            animateEndHold();
+        case LUMEN_REVEAL:
+            animateLumenReveal();
+            break;
+
+        case PACMAN_EATS:
+            animatePacmanEats();
+            break;
+
+        case BLACK_HOLD:
+            animateBlackHold();
             break;
     }
 }
